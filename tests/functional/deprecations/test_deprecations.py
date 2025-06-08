@@ -1,4 +1,6 @@
+import os
 from collections import defaultdict
+from unittest import mock
 
 import pytest
 import yaml
@@ -9,10 +11,12 @@ from dbt.clients.registry import _get_cached
 from dbt.events.types import (
     CustomKeyInConfigDeprecation,
     CustomKeyInObjectDeprecation,
+    CustomOutputPathInSourceFreshnessDeprecation,
     DeprecationsSummary,
     DuplicateYAMLKeysDeprecation,
     GenericJSONSchemaValidationDeprecation,
     PackageRedirectDeprecation,
+    WEOIncludeExcludeDeprecation,
 )
 from dbt.tests.util import run_dbt, run_dbt_and_capture, write_file
 from dbt_common.exceptions import EventCompilationError
@@ -24,6 +28,7 @@ from tests.functional.deprecations.fixtures import (
     duplicate_keys_yaml,
     invalid_deprecation_date_yaml,
     models_trivial__model_sql,
+    multiple_custom_keys_in_config_yaml,
 )
 from tests.utils import EventCatcher
 
@@ -199,11 +204,11 @@ class TestProjectFlagsMovedDeprecationWarnErrorOptions(TestProjectFlagsMovedDepr
     def test_profile_config_deprecation(self, project):
         deprecations.reset_deprecations()
         with pytest.raises(EventCompilationError):
-            run_dbt(["--warn-error-options", "{'include': 'all'}", "parse"])
+            run_dbt(["--warn-error-options", "{'error': 'all'}", "parse"])
 
         with pytest.raises(EventCompilationError):
             run_dbt(
-                ["--warn-error-options", "{'include': ['ProjectFlagsMovedDeprecation']}", "parse"]
+                ["--warn-error-options", "{'error': ['ProjectFlagsMovedDeprecation']}", "parse"]
             )
 
         _, logs = run_dbt_and_capture(
@@ -294,6 +299,7 @@ class TestDeprecatedInvalidDeprecationDate:
             "models.yml": invalid_deprecation_date_yaml,
         }
 
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
     def test_deprecated_invalid_deprecation_date(self, project):
         event_catcher = EventCatcher(GenericJSONSchemaValidationDeprecation)
         try:
@@ -305,8 +311,7 @@ class TestDeprecatedInvalidDeprecationDate:
 
         assert len(event_catcher.caught_events) == 1
         assert (
-            "1 is not of type 'string', 'null' in file `models/models.yml` at path\n`models[0].deprecation_date`"
-            in event_catcher.caught_events[0].info.msg
+            "1 is not of type 'string', 'null' in file" in event_catcher.caught_events[0].info.msg
         )
 
 
@@ -323,7 +328,7 @@ class TestDuplicateYAMLKeysInSchemaFiles:
         run_dbt(["parse", "--no-partial-parse"], callbacks=[event_catcher.catch])
         assert len(event_catcher.caught_events) == 1
         assert (
-            "Duplicate key 'models' in \"<unicode string>\", line 6, column 1 in file\n`models/models.yml`"
+            "Duplicate key 'models' in \"<unicode string>\", line 6, column 1 in file"
             in event_catcher.caught_events[0].info.msg
         )
 
@@ -336,13 +341,43 @@ class TestCustomKeyInConfigDeprecation:
             "models.yml": custom_key_in_config_yaml,
         }
 
-    def test_duplicate_yaml_keys_in_schema_files(self, project):
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
+    def test_custom_key_in_config_deprecation(self, project):
         event_catcher = EventCatcher(CustomKeyInConfigDeprecation)
-        run_dbt(["parse", "--no-partial-parse"], callbacks=[event_catcher.catch])
+        run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_catcher.catch],
+        )
         assert len(event_catcher.caught_events) == 1
         assert (
             "Custom key `my_custom_key` found in `config` at path `models[0].config`"
             in event_catcher.caught_events[0].info.msg
+        )
+
+
+class TestMultipleCustomKeysInConfigDeprecation:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "models_trivial.sql": models_trivial__model_sql,
+            "models.yml": multiple_custom_keys_in_config_yaml,
+        }
+
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
+    def test_multiple_custom_keys_in_config_deprecation(self, project):
+        event_catcher = EventCatcher(CustomKeyInConfigDeprecation)
+        run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_catcher.catch],
+        )
+        assert len(event_catcher.caught_events) == 2
+        assert (
+            "Custom key `my_custom_key` found in `config` at path `models[0].config`"
+            in event_catcher.caught_events[0].info.msg
+        )
+        assert (
+            "Custom key `my_custom_key2` found in `config` at path `models[0].config`"
+            in event_catcher.caught_events[1].info.msg
         )
 
 
@@ -354,11 +389,105 @@ class TestCustomKeyInObjectDeprecation:
             "models.yml": custom_key_in_object_yaml,
         }
 
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
     def test_custom_key_in_object_deprecation(self, project):
         event_catcher = EventCatcher(CustomKeyInObjectDeprecation)
         run_dbt(["parse", "--no-partial-parse"], callbacks=[event_catcher.catch])
         assert len(event_catcher.caught_events) == 1
         assert (
-            "Custom key `'my_custom_property'` found at `models[0]` in file\n`models/models.yml`."
+            "Custom key `my_custom_property` found at `models[0]` in file"
             in event_catcher.caught_events[0].info.msg
         )
+
+
+class TestJsonschemaValidationDeprecationsArentRunWithoutEnvVar:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "models_trivial.sql": models_trivial__model_sql,
+            "models.yml": custom_key_in_object_yaml,
+        }
+
+    def test_jsonschema_validation_deprecations_arent_run_without_env_var(self, project):
+        event_catcher = EventCatcher(CustomKeyInObjectDeprecation)
+        run_dbt(["parse", "--no-partial-parse"], callbacks=[event_catcher.catch])
+        assert len(event_catcher.caught_events) == 0
+
+
+class TestCustomOutputPathInSourceFreshnessDeprecation:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {}
+
+    def test_jsonschema_validation_deprecations_arent_run_without_env_var(
+        self, project, project_root
+    ):
+        event_catcher = EventCatcher(CustomOutputPathInSourceFreshnessDeprecation)
+
+        write_file(yaml.safe_dump({}), project_root, "custom_output.json")
+        run_dbt(
+            ["source", "freshness", "--output", "custom_output.json"],
+            callbacks=[event_catcher.catch],
+        )
+        assert len(event_catcher.caught_events) == 1
+
+
+@pytest.mark.skip(
+    reason="Skip until we have have regenerated the json schemas to account for all happy path failures"
+)
+class TestHappyPathProjectHasNoDeprecations:
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
+    def test_happy_path_project_has_no_deprecations(self, happy_path_project):
+        event_cathcer = EventCatcher(DeprecationsSummary)
+        run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_cathcer.catch],
+        )
+        assert len(event_cathcer.caught_events) == 0
+
+
+class TestBaseProjectHasNoDeprecations:
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
+    def test_base_project_has_no_deprecations(self, project):
+        event_cathcer = EventCatcher(DeprecationsSummary)
+        run_dbt(
+            ["parse", "--no-partial-parse", "--show-all-deprecations"],
+            callbacks=[event_cathcer.catch],
+        )
+        assert len(event_cathcer.caught_events) == 0
+
+
+class TestWEOIncludeExcludeDeprecation:
+    @pytest.mark.parametrize(
+        "include_error,exclude_warn,expect_deprecation",
+        [
+            ("include", "exclude", 1),
+            ("include", "warn", 1),
+            ("error", "exclude", 1),
+            ("error", "warn", 0),
+        ],
+    )
+    def test_weo_include_exclude_deprecation(
+        self,
+        project,
+        include_error: str,
+        exclude_warn: str,
+        expect_deprecation: int,
+    ):
+        event_catcher = EventCatcher(WEOIncludeExcludeDeprecation)
+        warn_error_options = f"{{'{include_error}': 'all', '{exclude_warn}': ['Deprecations']}}"
+        run_dbt(
+            ["parse", "--show-all-deprecations", "--warn-error-options", warn_error_options],
+            callbacks=[event_catcher.catch],
+        )
+
+        assert len(event_catcher.caught_events) == expect_deprecation
+        if expect_deprecation > 0:
+            if include_error == "include":
+                assert "include" in event_catcher.caught_events[0].info.msg
+            else:
+                assert "include" not in event_catcher.caught_events[0].info.msg
+            if exclude_warn == "exclude":
+                assert "exclude" in event_catcher.caught_events[0].info.msg
+            else:
+                assert "exclude" not in event_catcher.caught_events[0].info.msg

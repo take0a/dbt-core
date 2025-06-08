@@ -11,7 +11,7 @@ import dbt.config
 import dbt.exceptions
 from dbt.adapters.contracts.connection import DEFAULT_QUERY_COMMENT, QueryComment
 from dbt.adapters.factory import load_plugin
-from dbt.config.project import Project, _get_required_version, jsonschema_validate
+from dbt.config.project import Project, _get_required_version
 from dbt.constants import DEPENDENCIES_FILE_NAME
 from dbt.contracts.project import GitPackage, LocalPackage, PackageConfig
 from dbt.deprecations import GenericJSONSchemaValidationDeprecation
@@ -350,7 +350,7 @@ class TestProjectInitialization(BaseConfigTest):
 
         assert "Cycle detected" in str(exc.exception)
 
-    def test_query_comment_disabled(self):
+    def test_query_comment_empty(self):
         self.default_project_data.update(
             {
                 "query-comment": None,
@@ -360,7 +360,7 @@ class TestProjectInitialization(BaseConfigTest):
             self.default_project_data, project_root=self.project_dir
         )
         self.assertEqual(project.query_comment.comment, "")
-        self.assertEqual(project.query_comment.append, False)
+        self.assertEqual(project.query_comment.append, QueryComment().append)
 
         self.default_project_data.update(
             {
@@ -371,7 +371,7 @@ class TestProjectInitialization(BaseConfigTest):
             self.default_project_data, project_root=self.project_dir
         )
         self.assertEqual(project.query_comment.comment, "")
-        self.assertEqual(project.query_comment.append, False)
+        self.assertEqual(project.query_comment.append, QueryComment().append)
 
     def test_default_query_comment(self):
         project = project_from_config_norender(
@@ -402,6 +402,30 @@ class TestProjectInitialization(BaseConfigTest):
         )
         self.assertEqual(project.query_comment.comment, "run by user test")
         self.assertEqual(project.query_comment.append, True)
+
+    def test_default_query_comment_append_False(self):
+        self.default_project_data.update(
+            {
+                "query-comment": {"append": False},
+            }
+        )
+        project = project_from_config_norender(
+            self.default_project_data, project_root=self.project_dir
+        )
+        self.assertEqual(project.query_comment.comment, DEFAULT_QUERY_COMMENT)
+        self.assertEqual(project.query_comment.append, False)
+
+    def test_custom_query_comment_append_false(self):
+        self.default_project_data.update(
+            {
+                "query-comment": {"comment": "run by user test", "append": False},
+            }
+        )
+        project = project_from_config_norender(
+            self.default_project_data, project_root=self.project_dir
+        )
+        self.assertEqual(project.query_comment.comment, "run by user test")
+        self.assertEqual(project.query_comment.append, False)
 
     def test_packages_from_dependencies(self):
         packages = {
@@ -594,7 +618,10 @@ class TestGetRequiredVersion:
 
 class TestDeprecations:
 
+    @mock.patch.dict(os.environ, {"DBT_ENV_PRIVATE_RUN_JSONSCHEMA_VALIDATIONS": "True"})
     def test_jsonschema_validate(self) -> None:
+        from dbt.jsonschemas import jsonschema_validate
+
         project_dict: Dict[str, Any] = {}
 
         event_catcher = EventCatcher(GenericJSONSchemaValidationDeprecation)
